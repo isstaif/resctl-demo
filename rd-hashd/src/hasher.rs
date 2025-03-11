@@ -7,7 +7,7 @@ use pid::Pid;
 use quantiles::ckms::CKMS;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
-use rand_distr::{Distribution, Normal, Uniform};
+use rand_distr::{Distribution, Normal, Uniform, Exp};
 use sha1_smol::{Digest, Sha1};
 use std::convert::TryInto;
 use std::fs::OpenOptions;
@@ -209,6 +209,16 @@ struct HasherThread {
     anon_dist_slots: usize,
 }
 
+fn fib (n: i32) -> i32 {
+    if n <= 0 {
+          return 0;
+    } else if n== 1{
+          return 1;
+} else {
+    return fib (n-1)  + fib(n-2);
+ }
+}
+
 impl HasherThread {
     /// Translate [-1.0, 1.0] `rel` to page index. Similar to
     /// AnonArea::rel_to_page().
@@ -253,7 +263,7 @@ impl HasherThread {
         anon_dist[slot] += cnt as u64;
     }
 
-    fn run(self) {
+    fn run(mut self) {
         let mut rng = SmallRng::from_entropy();
 
         let mut file_dist = Vec::<u64>::new();
@@ -264,11 +274,11 @@ impl HasherThread {
         let rw_uniform = Uniform::new_inclusive(0.0, 1.0);
 
         // Load hash input files.
-        let file_addr_normal = ClampedNormal::new(0.0, self.file_addr_stdev_ratio, -1.0, 1.0);
+        //let file_addr_normal = ClampedNormal::new(0.0, self.file_addr_stdev_ratio, -1.0, 1.0);
 
         trace!("hasher::run(): cpu_ratio={:.2}", self.cpu_ratio);
         let mut rdh = Hasher::new(self.cpu_ratio, self.fake_cpu_load_time_per_byte);
-        for _ in 0..self.file_nr_chunks {
+        /*for _ in 0..self.file_nr_chunks {
             let rel = file_addr_normal.sample(&mut rng) * self.file_addr_frac;
             let page = self.rel_to_file_page(rel);
             let (file_idx, file_off) = self.file_page_to_idx_off(page);
@@ -285,11 +295,12 @@ impl HasherThread {
                 ),
                 Err(e) => error!("Failed to load {:?}:{} ({:?})", &path, file_off, &e),
             }
-        }
-        sleep(Duration::from_secs_f64(self.sleep_dur / 3.0));
+        }*/
+        sleep(Duration::from_secs_f64(self.sleep_dur));
+        self.started_at = Instant::now();
 
         // Generate anonymous accesses.
-        let aa = self.anon_area.read().unwrap();
+        /*let aa = self.anon_area.read().unwrap();
         let anon_addr_normal = ClampedNormal::new(0.0, self.anon_addr_stdev_ratio, -1.0, 1.0);
 
         for _ in 0..self.anon_nr_chunks {
@@ -310,12 +321,14 @@ impl HasherThread {
                 rdh.append(aa.access_page(page_idx))
             }
             Self::anon_dist_count(&mut anon_dist, page_base, self.chunk_pages, &aa);
-        }
-        sleep(Duration::from_secs_f64(self.sleep_dur / 3.0));
+        }*/
+        // sleep(Duration::from_secs_f64(self.sleep_dur / 3.0));
 
         // Calculate sha1 and signal completion.
         let digest = rdh.sha1();
-        sleep(Duration::from_secs_f64(self.sleep_dur / 3.0));
+        // sleep(Duration::from_secs_f64(self.sleep_dur / 3.0));
+
+	for int in 0..32 { fib(int); }
 
         self.cmpl_tx
             .send(HashCompletion {
@@ -348,6 +361,7 @@ struct DispatchThread {
     anon_area: Arc<RwLock<AnonArea>>,
     anon_size_normal: ClampedNormal,
     sleep_normal: ClampedNormal,
+    sleep_exp: Exp<f64>,
 
     // Latency percentile calculation.
     lat_min: f64,
@@ -478,6 +492,8 @@ impl DispatchThread {
         let anon_total = Self::anon_total(max_size, &params);
         let now = Instant::now();
 
+        let lambda = 1.0 / params.sleep_mean;
+
         let mut dt = Self {
             max_size,
             params_at: now,
@@ -491,6 +507,7 @@ impl DispatchThread {
             anon_area: Arc::new(RwLock::new(AnonArea::new(anon_total, anon_comp))),
             anon_size_normal: Self::anon_size_normal(&params),
             sleep_normal: Self::sleep_normal(&params),
+            sleep_exp: Exp::new(lambda).expect("Failed to create exponential distribution"),
 
             lat_min: std::f64::MAX,
             lat_max: 0.0,
@@ -602,7 +619,8 @@ impl DispatchThread {
                 anon_addr_frac: self.anon_addr_frac,
                 anon_write_frac: self.params.anon_write_frac,
 
-                sleep_dur: self.sleep_normal.sample(&mut rng),
+                // sleep_dur: self.sleep_normal.sample(&mut rng),
+                sleep_dur: self.sleep_exp.sample(&mut rng),
                 cpu_ratio: self.params.cpu_ratio,
                 fake_cpu_load_time_per_byte: self.fake_cpu_load_time_per_byte,
 
