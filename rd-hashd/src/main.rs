@@ -305,6 +305,7 @@ fn main() {
         &params,
         args.compressibility,
         create_logger(args, &params),
+        args.trace_path.clone()
     );
 
     //

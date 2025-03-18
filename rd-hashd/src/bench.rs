@@ -277,7 +277,8 @@ impl TestHasher {
         fill_anon: bool,
         verbose: bool,
     ) -> Self {
-        let disp = hasher::Dispatch::new(max_size, tf, params, comp, logger);
+        let trace_path: Option<String> = Some("/home/aati2/trace.csv".to_string());
+        let disp = hasher::Dispatch::new(max_size, tf, params, comp, logger,trace_path);
         if fill_anon {
             disp.fill_anon();
         }

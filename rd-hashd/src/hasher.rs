@@ -1,11 +1,12 @@
 // Copyright (c) Facebook, Inc. and its affiliates.
 use anyhow::Result;
 use crossbeam::channel::{self, select, Receiver, Sender};
-use log::{debug, error, trace, warn};
+use log::{debug, error, trace, warn, info};
 use num::Integer;
 use pid::Pid;
 use quantiles::ckms::CKMS;
 use rand::rngs::SmallRng;
+use rand::Rng;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Normal, Uniform, Exp};
 use sha1_smol::{Digest, Sha1};
@@ -15,7 +16,11 @@ use std::io::{prelude::*, SeekFrom};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::thread::{sleep, spawn, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant,SystemTime, UNIX_EPOCH};
+use csv::Reader;
+use std::error::Error;
+use std::fs::File;
+use std::io;
 
 use rd_hashd_intf::{Latencies, Params, Stat};
 use rd_util::anon_area::AnonArea;
@@ -263,7 +268,7 @@ impl HasherThread {
         anon_dist[slot] += cnt as u64;
     }
 
-    fn run(mut self) {
+    fn run(mut self) { //benchmark code
         let mut rng = SmallRng::from_entropy();
 
         let mut file_dist = Vec::<u64>::new();
@@ -341,6 +346,33 @@ impl HasherThread {
     }
 }
 
+struct CsvReader {
+    records: Vec<csv::StringRecord>,
+}
+
+impl CsvReader {
+    fn new(file_path: Option<String>) -> Self {
+        // Provide a default file path if the Option is None
+        let file_path = file_path.unwrap_or_else(|| "/home/aati2/trace.csv".to_string());
+
+        info!("Using trace path: {}", file_path);
+
+        let file = File::open(&file_path).unwrap();
+        let mut rdr = Reader::from_reader(file);
+        let records: Vec<csv::StringRecord> = rdr.records().filter_map(Result::ok).collect();
+        Self { records }
+    }
+
+    fn get_record_by_index(&self, index: usize) -> Option<i32> {
+        if let Some(record) = self.records.get(index) {
+            let ts_abs: i32 = record[2].parse().unwrap();
+            Some(ts_abs)
+        } else {
+            None
+        }
+    }
+}
+
 /// Dispatch thread which is started when Dispatch is created and
 /// keeps scheduling Hasher workers according to the params.
 struct DispatchThread {
@@ -349,8 +381,11 @@ struct DispatchThread {
     tf: Arc<TestFiles>,
     params: Params,
     params_at: Instant,
+    conc_updated_at: Instant,
     logger: Option<Logger>,
     cmd_rx: Receiver<DispatchCmd>,
+
+    trace_rdr: CsvReader,
 
     wq: WorkQueue,
     cmpl_tx: Sender<HashCompletion>,
@@ -486,20 +521,24 @@ impl DispatchThread {
         anon_comp: f64,
         logger: Option<Logger>,
         cmd_rx: Receiver<DispatchCmd>,
+        trace_path: Option<String>,
     ) -> Self {
         let (cmpl_tx, cmpl_rx) = channel::unbounded::<HashCompletion>();
         let (lat_pid, rps_pid) = Self::pid_controllers(&params);
         let anon_total = Self::anon_total(max_size, &params);
         let now = Instant::now();
 
-        let lambda = 1.0 / params.sleep_mean;
+        let lambda = 1.0 / params.sleep_mean; 
 
         let mut dt = Self {
             max_size,
             params_at: now,
+            conc_updated_at: now,
             cmd_rx,
             logger,
             wq: WorkQueue::new(Duration::from_secs_f64(Self::WQ_IDLE_TIMEOUT)),
+
+            trace_rdr: CsvReader::new(trace_path),
 
             cmpl_tx,
             cmpl_rx,
@@ -754,9 +793,38 @@ impl DispatchThread {
 
     pub fn run(&mut self) {
         self.params_updated();
+
+        let ts0 = Instant::now();
+
         loop {
+
+            let now = Instant::now();
+            if now.duration_since(self.conc_updated_at).as_secs() >= 1 {
+
+                let mut rng = rand::thread_rng();
+                let random_number = rng.gen_range(1..=10); // Generates a number between 1 and>
+
+                // self.concurrency = random_number as f64;
+                // self.conc_updated_at = Instant::now();
+
+                // Get current Unix timestamp and compute index modulo 10
+                let start = now.duration_since(self.params_at).as_secs() as usize;
+                let index = start % 300;
+
+                // Retrieve the record at the current index and store ts_abs
+                match self.trace_rdr.get_record_by_index(index) {
+                    Some(ts_abs) => {
+                        println!("Record at index {} -> ts_abs: {}", index, ts_abs);
+                        self.concurrency = ts_abs as f64; // 
+                        self.conc_updated_at = Instant::now();
+                    },
+                    None => println!("Record not found at index {}.", index),
+                }
+
+            }
+
             // Launch hashers to fill target concurrency.
-            self.launch_hashers();
+            self.launch_hashers(); 
 
             // Handle user commands and hasher completions.
             select! {
@@ -838,7 +906,7 @@ impl DispatchThread {
             let now = Instant::now();
             if now.duration_since(self.params_at).as_secs() >= 1 {
                 if self.refresh_lat_rps(now) {
-                    self.update_control();
+                    //self.update_control();
                 }
             } else {
                 self.reset_lat_rps(now);
@@ -864,11 +932,12 @@ impl Dispatch {
         params: &Params,
         anon_comp: f64,
         logger: Option<Logger>,
+        trace_path: Option<String>,
     ) -> Self {
         let params_copy = params.clone();
         let (cmd_tx, cmd_rx) = channel::unbounded();
         let dispatch_jh = Option::Some(spawn(move || {
-            let mut dt = DispatchThread::new(max_size, tf, params_copy, anon_comp, logger, cmd_rx);
+            let mut dt = DispatchThread::new(max_size, tf, params_copy, anon_comp, logger, cmd_rx, trace_path);
             dt.run();
         }));
         let (stat_tx, stat_rx) = channel::unbounded();
