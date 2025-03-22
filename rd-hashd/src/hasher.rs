@@ -31,6 +31,11 @@ use super::logger::Logger;
 use super::testfiles::TestFiles;
 use super::workqueue::WorkQueue;
 
+use image::{ImageBuffer, Rgba};
+use nalgebra::{DMatrix, DVector};
+use rand::random;
+
+
 /// Load files and calculate sha1.
 pub struct Hasher {
     buf: Vec<u8>,
@@ -224,6 +229,29 @@ fn fib (n: i32) -> i32 {
  }
 }
 
+fn generate_dummy_image(width: u32, height: u32) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+    let mut img_buffer = ImageBuffer::new(width, height);
+
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = Rgba([
+                (x % 256) as u8, // Red gradient
+                (y % 256) as u8, // Green gradient
+                ((x + y) % 256) as u8, // Blue gradient
+                255, // Alpha (opaque)
+            ]);
+            img_buffer.put_pixel(x, y, pixel);
+        }
+    }
+
+    img_buffer
+}
+
+fn compute_intensive_operation(matrix: &DMatrix<f64>) -> DMatrix<f64> {
+    matrix.clone() * matrix.transpose()
+}
+
+
 impl HasherThread {
     /// Translate [-1.0, 1.0] `rel` to page index. Similar to
     /// AnonArea::rel_to_page().
@@ -333,7 +361,21 @@ impl HasherThread {
         let digest = rdh.sha1();
         // sleep(Duration::from_secs_f64(self.sleep_dur / 3.0));
 
-	for int in 0..32 { fib(int); }
+	//for int in 0..34 { fib(int); }
+        //for int in 0..10 { fib(32); } 
+
+    //let width = 200;
+    //let height = 200;
+    //let dummy_image = generate_dummy_image(width, height);
+    //dummy_image.save("dummy.jpg").expect("Failed to save dummy image");
+
+    let size = 500;
+    let matrix = DMatrix::from_fn(size, size, |_, _| random::<f64>());
+    let start = Instant::now();
+    let result = compute_intensive_operation(&matrix);
+    let duration = start.elapsed();
+
+//println!("Computation took {:?}", duration);
 
         self.cmpl_tx
             .send(HashCompletion {
@@ -629,7 +671,13 @@ impl DispatchThread {
         // Fire off hash workers to fill up the target concurrency.
         let mut rng = SmallRng::from_entropy();
 
-        while self.nr_in_flight < self.concurrency as u32 {
+        for i in 0..self.concurrency as u32 {
+
+        let interval = if self.concurrency > 0.0 {
+            (i as f64) / self.concurrency
+        } else {
+            0.0
+        };
             let chunk_size = *PAGE_SIZE * self.params.chunk_pages;
 
             // Determine file and anon access chunk counts. Indices are
@@ -659,7 +707,8 @@ impl DispatchThread {
                 anon_write_frac: self.params.anon_write_frac,
 
                 // sleep_dur: self.sleep_normal.sample(&mut rng),
-                sleep_dur: self.sleep_exp.sample(&mut rng),
+                // sleep_dur: self.sleep_exp.sample(&mut rng),
+                sleep_dur: interval,
                 cpu_ratio: self.params.cpu_ratio,
                 fake_cpu_load_time_per_byte: self.fake_cpu_load_time_per_byte,
 
@@ -801,8 +850,8 @@ impl DispatchThread {
             let now = Instant::now();
             if now.duration_since(self.conc_updated_at).as_secs() >= 1 {
 
-                let mut rng = rand::thread_rng();
-                let random_number = rng.gen_range(1..=10); // Generates a number between 1 and>
+                //let mut rng = rand::thread_rng();
+                //let random_number = rng.gen_range(1..=10); // Generates a number between 1 and>
 
                 // self.concurrency = random_number as f64;
                 // self.conc_updated_at = Instant::now();
@@ -820,11 +869,9 @@ impl DispatchThread {
                     },
                     None => println!("Record not found at index {}.", index),
                 }
-
-            }
-
             // Launch hashers to fill target concurrency.
-            self.launch_hashers(); 
+            self.launch_hashers();
+            }
 
             // Handle user commands and hasher completions.
             select! {
