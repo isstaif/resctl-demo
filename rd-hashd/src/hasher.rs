@@ -671,6 +671,64 @@ impl DispatchThread {
         // Fire off hash workers to fill up the target concurrency.
         let mut rng = SmallRng::from_entropy();
 
+        while self.nr_in_flight < self.concurrency as u32 {
+
+        // let interval = if self.concurrency > 0.0 {
+        //     (i as f64) / self.concurrency
+        // } else {
+        //     0.0
+        // };
+            let chunk_size = *PAGE_SIZE * self.params.chunk_pages;
+
+            // Determine file and anon access chunk counts. Indices are
+            // determined by each hash worker to avoid overloading the
+            // dispatch thread.
+            let file_size = self.file_size_normal.sample(&mut rng).round() as usize;
+            let file_nr_chunks = Integer::div_ceil(&file_size, &chunk_size).max(1);
+            let anon_size = self.anon_size_normal.sample(&mut rng).round() as usize;
+            let anon_nr_chunks = Integer::div_ceil(&anon_size, &chunk_size);
+
+            let hasher_thread = HasherThread {
+                tf: self.tf.clone(),
+                mem_frac: self.params.mem_frac,
+                chunk_pages: self.params.chunk_pages,
+
+                file_max_frac: self.tf.size as f64 / self.max_size as f64,
+                file_frac: self.params.file_frac,
+                file_nr_chunks,
+                file_addr_stdev_ratio: self.params.file_addr_stdev_ratio,
+                file_addr_frac: self.file_addr_frac,
+                file_write_frac: self.params.file_write_frac,
+
+                anon_area: self.anon_area.clone(),
+                anon_nr_chunks,
+                anon_addr_stdev_ratio: self.params.anon_addr_stdev_ratio,
+                anon_addr_frac: self.anon_addr_frac,
+                anon_write_frac: self.params.anon_write_frac,
+
+                // sleep_dur: self.sleep_normal.sample(&mut rng),
+                sleep_dur: self.sleep_exp.sample(&mut rng),
+                // sleep_dur: interval,
+                cpu_ratio: self.params.cpu_ratio,
+                fake_cpu_load_time_per_byte: self.fake_cpu_load_time_per_byte,
+
+                cmpl_tx: self.cmpl_tx.clone(),
+
+                started_at: Instant::now(),
+                file_dist_slots: self.file_dist.len(),
+                anon_dist_slots: self.anon_dist.len(),
+            };
+
+            self.wq.queue(move || hasher_thread.run());
+
+            self.nr_in_flight += 1;
+        }
+    }
+
+    fn launch_hashers_trace_driven(&mut self) {
+        // Fire off hash workers to fill up the target concurrency.
+        let mut rng = SmallRng::from_entropy();
+
         for i in 0..self.concurrency as u32 {
 
         let interval = if self.concurrency > 0.0 {
@@ -723,7 +781,8 @@ impl DispatchThread {
 
             self.nr_in_flight += 1;
         }
-    }
+        
+    }    
 
     fn reset_lat_rps(&mut self, now: Instant) {
         self.lat_min = std::f64::MAX;
@@ -847,30 +906,52 @@ impl DispatchThread {
 
         loop {
 
+            let is_trace_driven = false; 
+            let is_random = false; 
+
             let now = Instant::now();
-            if now.duration_since(self.conc_updated_at).as_secs() >= 1 {
 
-                //let mut rng = rand::thread_rng();
-                //let random_number = rng.gen_range(1..=10); // Generates a number between 1 and>
+            if is_trace_driven {
+                if now.duration_since(self.conc_updated_at).as_secs() >= 1 {
 
-                // self.concurrency = random_number as f64;
-                // self.conc_updated_at = Instant::now();
+                    //let mut rng = rand::thread_rng();
+                    //let random_number = rng.gen_range(1..=10); // Generates a number between 1 and>
 
-                // Get current Unix timestamp and compute index modulo 10
-                let start = now.duration_since(self.params_at).as_secs() as usize;
-                let index = start % 300;
+                    // self.concurrency = random_number as f64;
+                    // self.conc_updated_at = Instant::now();
 
-                // Retrieve the record at the current index and store ts_abs
-                match self.trace_rdr.get_record_by_index(index) {
-                    Some(ts_abs) => {
-                        println!("Record at index {} -> ts_abs: {}", index, ts_abs);
-                        self.concurrency = ts_abs as f64; // 
-                        self.conc_updated_at = Instant::now();
-                    },
-                    None => println!("Record not found at index {}.", index),
+                    // Get current Unix timestamp and compute index modulo 10
+                    let start = now.duration_since(self.params_at).as_secs() as usize;
+                    let index = start % 300;
+
+                    // Retrieve the record at the current index and store ts_abs
+                    match self.trace_rdr.get_record_by_index(index) {
+                        Some(ts_abs) => {
+                            println!("Record at index {} -> ts_abs: {}", index, ts_abs);
+                            self.concurrency = ts_abs as f64; // 
+                            self.conc_updated_at = Instant::now();
+                        },
+                        None => println!("Record not found at index {}.", index),
+                    }
+                // Launch hashers to fill target concurrency (only every time interval).
+                self.launch_hashers_trace_driven();
                 }
-            // Launch hashers to fill target concurrency.
-            self.launch_hashers();
+
+            } else {
+
+                if (is_random){
+                    if now.duration_since(self.conc_updated_at).as_secs() >= 1 {
+
+                        let mut rng = rand::thread_rng();
+                        let random_number = rng.gen_range(1..=10); // Generates a number between 1 and>
+
+                        self.concurrency = random_number as f64;
+                        self.conc_updated_at = Instant::now();
+                    }                      
+                }
+
+                // Launch hashers to fill target concurrency (anyway all times).
+                self.launch_hashers();
             }
 
             // Handle user commands and hasher completions.
@@ -953,7 +1034,7 @@ impl DispatchThread {
             let now = Instant::now();
             if now.duration_since(self.params_at).as_secs() >= 1 {
                 if self.refresh_lat_rps(now) {
-                    //self.update_control();
+                    if (!is_trace_driven && !is_random) { self.update_control(); } 
                 }
             } else {
                 self.reset_lat_rps(now);
