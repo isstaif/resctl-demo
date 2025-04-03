@@ -906,8 +906,7 @@ impl DispatchThread {
 
         loop {
 
-            let is_trace_driven = false; 
-            let is_random = false; 
+            let is_trace_driven = true; 
 
             let now = Instant::now();
 
@@ -921,7 +920,7 @@ impl DispatchThread {
                     // self.conc_updated_at = Instant::now();
 
                     // Get current Unix timestamp and compute index modulo 10
-                    let start = now.duration_since(self.params_at).as_secs() as usize;
+                    let start = now.duration_since(self.params_at).as_secs() as usize + 100;
                     let index = start % 300;
 
                     // Retrieve the record at the current index and store ts_abs
@@ -938,17 +937,6 @@ impl DispatchThread {
                 }
 
             } else {
-
-                if (is_random){
-                    if now.duration_since(self.conc_updated_at).as_secs() >= 1 {
-
-                        let mut rng = rand::thread_rng();
-                        let random_number = rng.gen_range(1..=10); // Generates a number between 1 and>
-
-                        self.concurrency = random_number as f64;
-                        self.conc_updated_at = Instant::now();
-                    }                      
-                }
 
                 // Launch hashers to fill target concurrency (anyway all times).
                 self.launch_hashers();
@@ -1034,7 +1022,7 @@ impl DispatchThread {
             let now = Instant::now();
             if now.duration_since(self.params_at).as_secs() >= 1 {
                 if self.refresh_lat_rps(now) {
-                    if (!is_trace_driven && !is_random) { self.update_control(); } 
+                    if (!is_trace_driven) { self.update_control(); } 
                 }
             } else {
                 self.reset_lat_rps(now);
