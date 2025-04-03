@@ -393,13 +393,11 @@ struct CsvReader {
 }
 
 impl CsvReader {
-    fn new(file_path: Option<String>) -> Self {
-        // Provide a default file path if the Option is None
-        let file_path = file_path.unwrap_or_else(|| "/home/aati2/trace.csv".to_string());
+    fn new(trace_path: String) -> Self {
 
-        info!("Using trace path: {}", file_path);
+        info!("Using trace path: {}", trace_path);
 
-        let file = File::open(&file_path).unwrap();
+        let file = File::open(&trace_path).unwrap();
         let mut rdr = Reader::from_reader(file);
         let records: Vec<csv::StringRecord> = rdr.records().filter_map(Result::ok).collect();
         Self { records }
@@ -427,7 +425,7 @@ struct DispatchThread {
     logger: Option<Logger>,
     cmd_rx: Receiver<DispatchCmd>,
 
-    trace_rdr: CsvReader,
+    trace_path: Option<String>,
 
     wq: WorkQueue,
     cmpl_tx: Sender<HashCompletion>,
@@ -568,7 +566,7 @@ impl DispatchThread {
         let (cmpl_tx, cmpl_rx) = channel::unbounded::<HashCompletion>();
         let (lat_pid, rps_pid) = Self::pid_controllers(&params);
         let anon_total = Self::anon_total(max_size, &params);
-        let now = Instant::now();
+        let now = Instant::now();      
 
         let lambda = 1.0 / params.sleep_mean; 
 
@@ -580,7 +578,7 @@ impl DispatchThread {
             logger,
             wq: WorkQueue::new(Duration::from_secs_f64(Self::WQ_IDLE_TIMEOUT)),
 
-            trace_rdr: CsvReader::new(trace_path),
+            trace_path: trace_path,
 
             cmpl_tx,
             cmpl_rx,
@@ -903,43 +901,57 @@ impl DispatchThread {
         self.params_updated();
 
         let ts0 = Instant::now();
+        let is_trace_driven = false; 
+
+        let trace_rdr : Option<CsvReader> = match self.trace_path.as_ref() {
+            Some(value) => {
+                println!("Loading trace: {}", value);
+                Some(CsvReader::new(value.to_string()))
+            }
+            None => {
+                println!("No trace provided, executing default code path...");
+                // alternative_code_path();
+                None
+            }
+        };
 
         loop {
 
-            let is_trace_driven = true; 
-
             let now = Instant::now();
 
-            if is_trace_driven {
-                if now.duration_since(self.conc_updated_at).as_secs() >= 1 {
+            match trace_rdr {
+                Some(ref rdr) => {
 
-                    //let mut rng = rand::thread_rng();
-                    //let random_number = rng.gen_range(1..=10); // Generates a number between 1 and>
+                    if now.duration_since(self.conc_updated_at).as_secs() >= 1 {
 
-                    // self.concurrency = random_number as f64;
-                    // self.conc_updated_at = Instant::now();
+                        //let mut rng = rand::thread_rng();
+                        //let random_number = rng.gen_range(1..=10); // Generates a number between 1 and>
 
-                    // Get current Unix timestamp and compute index modulo 10
-                    let start = now.duration_since(self.params_at).as_secs() as usize + 100;
-                    let index = start % 300;
+                        // self.concurrency = random_number as f64;
+                        // self.conc_updated_at = Instant::now();
 
-                    // Retrieve the record at the current index and store ts_abs
-                    match self.trace_rdr.get_record_by_index(index) {
-                        Some(ts_abs) => {
-                            println!("Record at index {} -> ts_abs: {}", index, ts_abs);
-                            self.concurrency = ts_abs as f64; // 
-                            self.conc_updated_at = Instant::now();
-                        },
-                        None => println!("Record not found at index {}.", index),
-                    }
-                // Launch hashers to fill target concurrency (only every time interval).
-                self.launch_hashers_trace_driven();
+                        // Get current Unix timestamp and compute index modulo 10
+                        let start = now.duration_since(self.params_at).as_secs() as usize + 100;
+                        let index = start % 300;
+
+                        // Retrieve the record at the current index and store ts_abs
+                        match rdr.get_record_by_index(index) {
+                            Some(ts_abs) => {
+                                println!("Record at index {} -> ts_abs: {}", index, ts_abs);
+                                self.concurrency = ts_abs as f64; // 
+                                self.conc_updated_at = Instant::now();
+                            },
+                            None => println!("Record not found at index {}.", index),
+                        }
+                    // Launch hashers to fill target concurrency (only every time interval).
+                    self.launch_hashers_trace_driven();
+                    }                    
+
                 }
-
-            } else {
-
-                // Launch hashers to fill target concurrency (anyway all times).
-                self.launch_hashers();
+                None => {
+                    // Launch hashers to fill target concurrency (anyway all times).
+                    self.launch_hashers();                    
+                },
             }
 
             // Handle user commands and hasher completions.
@@ -1022,7 +1034,7 @@ impl DispatchThread {
             let now = Instant::now();
             if now.duration_since(self.params_at).as_secs() >= 1 {
                 if self.refresh_lat_rps(now) {
-                    if (!is_trace_driven) { self.update_control(); } 
+                    if (trace_rdr.is_none()) { self.update_control(); } 
                 }
             } else {
                 self.reset_lat_rps(now);
