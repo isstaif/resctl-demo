@@ -8,7 +8,8 @@ use quantiles::ckms::CKMS;
 use rand::rngs::SmallRng;
 use rand::Rng;
 use rand::SeedableRng;
-use rand_distr::{Distribution, Normal, Uniform, Exp};
+use rand::thread_rng;
+use rand_distr::{Distribution, Normal, Uniform, Exp, LogNormal};
 use sha1_smol::{Digest, Sha1};
 use std::convert::TryInto;
 use std::fs::OpenOptions;
@@ -251,6 +252,27 @@ fn compute_intensive_operation(matrix: &DMatrix<f64>) -> DMatrix<f64> {
     matrix.clone() * matrix.transpose()
 }
 
+/// Perform a fixed amount of computation per millisecond, scaled by `ms`.
+fn busy_wait(ms: u64) {
+    // Number of operations per millisecond (tune as needed)
+    const OPS_PER_MS: u64 = 12000;
+
+    // Total number of operations to run
+    let total_ops = OPS_PER_MS * ms;
+
+    let mut dummy = 0.0;
+
+    for i in 0..total_ops {
+        // Do some floating-point math to keep CPU busy
+        dummy += ((i % 1000) as f64).sqrt().sin().cos().tan();
+    }
+
+    // Prevent compiler from optimizing away
+    if dummy > 1e100 {
+        println!("Highly unlikely: {}", dummy);
+    }
+}
+
 
 impl HasherThread {
     /// Translate [-1.0, 1.0] `rel` to page index. Similar to
@@ -369,13 +391,41 @@ impl HasherThread {
     //let dummy_image = generate_dummy_image(width, height);
     //dummy_image.save("dummy.jpg").expect("Failed to save dummy image");
 
-    let size = 500;
-    let matrix = DMatrix::from_fn(size, size, |_, _| random::<f64>());
-    let start = Instant::now();
-    let result = compute_intensive_operation(&matrix);
-    let duration = start.elapsed();
+    // let size = 500;
+    // let matrix = DMatrix::from_fn(size, size, |_, _| random::<f64>());
+    // let start = Instant::now();
+    // let result = compute_intensive_operation(&matrix);
+    // let duration = start.elapsed();
 
-//println!("Computation took {:?}", duration);
+    //arbitrarial workload, mean ~ 100ms
+    let mu = -2.427585093;
+    let sigma = 1.0;
+
+    //azure2021 workload, mean ~ 300ms
+    // let mu = -3.9413903782785376;
+    // let sigma = 2.4339711731992075;
+
+    let start = Instant::now();
+
+    // Create log-normal distribution
+    let log_normal = LogNormal::new(mu, sigma).expect("Invalid parameters for log-normal distribution");
+
+    // Random number generator
+    let mut rng = thread_rng();
+
+    // Generate 10 log-normal samples   
+    let sample = log_normal.sample(&mut rng);
+    //println!("Sample: {:.4}", sample*1000.0);
+
+    let sample = 0.1;
+
+    let wait_time_ms = (sample * 1000.0) as u64;
+    busy_wait(wait_time_ms);
+    // Wait for the busy-wait thread to finish
+    
+    let duration = start.elapsed();        
+
+    println!("Computation took {:?}", duration);
 
         self.cmpl_tx
             .send(HashCompletion {
